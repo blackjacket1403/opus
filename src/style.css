@@ -1,9 +1,9 @@
 *{margin:0;padding:0;box-sizing:border-box;}
-  html,body{height:100%;overflow:hidden;background:#060403;color:#f0e3c4;
+  html,body{height:100%;overflow:hidden;background:#05060b;color:#f0e3c4;
     font-family:'Cormorant Garamond',Georgia,serif;-webkit-font-smoothing:antialiased;cursor:default;}
-  /* atmospheric backdrop behind the canvas */
+  /* deep-space backdrop behind the canvas */
   body{background:
-     radial-gradient(120% 90% at 50% 58%, rgba(60,34,16,.55) 0%, rgba(20,11,6,.85) 45%, #060403 80%);}
+     radial-gradient(120% 95% at 50% 52%, rgba(46,34,86,.55) 0%, rgba(14,12,30,.9) 45%, #05060b 82%);}
   #c{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:1;}
 
   /* film grain */
