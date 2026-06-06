@@ -145,7 +145,7 @@ function drawBloom(){
   bctx.setTransform(1,0,0,1,0,0); bctx.clearRect(0,0,bw,bh); bctx.imageSmoothingEnabled=true;
   bctx.drawImage(cv,0,0,bw,bh);
   g.globalCompositeOperation='lighter'; g.imageSmoothingEnabled=true;
-  g.globalAlpha=0.42; g.drawImage(bloom,0,0,W,H);
+  g.globalAlpha=0.30; g.drawImage(bloom,0,0,W,H);
   g.globalAlpha=1; g.globalCompositeOperation='source-over';
 }
 
@@ -158,9 +158,11 @@ function frame(t){
     if(autoQ&&fps<42&&qTier>0){ qTier--; resize(); initChambers(); } } }
   _lt=t;
   analyse(t,dt);
-  // motion-blurred clear → speed streaks toward the vanishing point
+  // opaque dark background each frame (additive chambers would otherwise blow out to white)
   g.globalCompositeOperation='source-over';
-  g.fillStyle='rgba(4,4,10,0.34)'; g.fillRect(0,0,W,H);
+  const bg=g.createRadialGradient(CX,CY,0,CX,CY,MIN*1.15);
+  bg.addColorStop(0,'#0a0a16'); bg.addColorStop(0.6,'#06060e'); bg.addColorStop(1,'#030307');
+  g.fillStyle=bg; g.fillRect(0,0,W,H);
   // sort far → near so nearer chambers overlay
   chambers.sort((a,b)=> (b.z-camZ)-(a.z-camZ));
   for(const c of chambers) drawChamber(c);
