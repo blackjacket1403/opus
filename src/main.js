@@ -1,207 +1,170 @@
 import './style.css';
 "use strict";
 /* =========================================================================
-   OPUS — Aurora of the Spectrum
-   Pitch becomes flowing waves: a stack of luminous bands from low (bottom) to
-   high (top). Each band swells and brightens with that pitch's energy, and —
-   the key idea — it glows and flows toward the side the sound is actually
-   coming from (its stereo direction). Calm, flowing, beautiful.
-   Vanilla JS · Canvas 2D · Web Audio.
+   OPUS — Liquid Spectrum  (WebGL)
+   A full-screen GPU shader turns classical music into flowing liquid light:
+   pitch runs low (bottom) → high (top); the LEFT and RIGHT of the screen are
+   driven by the left/right audio channels and the whole field flows toward the
+   side the sound comes from. Domain-warped fbm gives silky aurora filaments,
+   ACES tone-mapping keeps it luminous but never blown out.
    ========================================================================= */
 const cv = document.getElementById('c');
-const g  = cv.getContext('2d', { alpha:false });
 const audio = document.getElementById('audio');
-const TAU = Math.PI*2;
-const lerp  = (a,b,t)=>a+(b-a)*t;
-const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
-const rgba  = (c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
-let W,H,DPR,CX,MIN,yTop,yBot;
-let bloom,bctx,bw,bh;   // offscreen for a cheap, pretty bloom pass
-const QUAL=[
-  {dpr:1.00, bands:20, motes:0},    // low
-  {dpr:1.35, bands:28, motes:40},   // medium
-  {dpr:1.60, bands:38, motes:70},   // high
-];
-let qTier = (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 1 : 2;
-let autoQ = true;
+let gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false})
+      || cv.getContext('experimental-webgl');
 
-/* pitch → colour (low warm → high cool) */
-const PAL=[ [255,104, 76],[255,150, 80],[246,212,130],[150,224,176],[120,198,255],[176,150,255] ];
-function pitchColor(t){ t=clamp(t,0,1)*(PAL.length-1); const i=Math.floor(t), f=t-i, a=PAL[i], b=PAL[Math.min(PAL.length-1,i+1)];
-  return [lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f)]; }
-
-/* ---------------- pitch bands (log-spaced) ---------------- */
-const F_LO=42, F_HI=12000;
-let bands=[], K=0;
-function buildBands(){
-  K=QUAL[qTier].bands; bands=new Array(K);
-  for(let i=0;i<K;i++) bands[i]={ e:0,eL:0,eR:0,pan:0, phase:Math.random()*TAU, col:pitchColor(i/(K-1)), i0:0,i1:0 };
-  if(ready) assignBins();
-}
-function assignBins(){
-  for(let i=0;i<K;i++){ const f0=F_LO*Math.pow(F_HI/F_LO, i/K), f1=F_LO*Math.pow(F_HI/F_LO, (i+1)/K);
-    bands[i].i0=Math.max(1,Math.round(f0/binHz)); bands[i].i1=Math.max(bands[i].i0,Math.round(f1/binHz)); }
-}
-
+/* ---------- quality (render scale; governor steps it down if needed) ---------- */
+const QUAL=[0.5, 0.7, 0.9];
+let qTier=2, autoQ=true, scale=QUAL[qTier];
+let W=0,H=0;
 function resize(){
-  DPR = Math.min(window.devicePixelRatio||1, QUAL[qTier].dpr);
-  W = window.innerWidth; H = window.innerHeight;
-  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
-  g.setTransform(DPR,0,0,DPR,0,0);
-  CX=W/2; MIN=Math.min(W,H); yTop=H*0.16; yBot=H*0.86;
-  bw=Math.max(1,Math.floor(W*DPR/4)); bh=Math.max(1,Math.floor(H*DPR/4));
-  if(!bloom){ bloom=document.createElement('canvas'); bctx=bloom.getContext('2d'); }
-  bloom.width=bw; bloom.height=bh;
-  g.fillStyle='#06070e'; g.fillRect(0,0,W,H);
+  W=window.innerWidth; H=window.innerHeight;
+  if(!gl) return;
+  cv.width=Math.max(2,Math.floor(W*scale));
+  cv.height=Math.max(2,Math.floor(H*scale));
+  gl.viewport(0,0,cv.width,cv.height);
 }
 addEventListener('resize', resize);
 
-/* ---------------- drifting motes (carried in the flow) ---------------- */
-const moteSpr=(function(){ const c=document.createElement('canvas'); c.width=c.height=32; const x=c.getContext('2d');
-  const gr=x.createRadialGradient(16,16,0,16,16,16); gr.addColorStop(0,'rgba(255,248,232,0.9)'); gr.addColorStop(1,'rgba(255,248,232,0)');
-  x.fillStyle=gr; x.fillRect(0,0,32,32); return c; })();
-let motes=[];
-function initMotes(){ const n=QUAL[qTier].motes; motes=new Array(n); for(let i=0;i<n;i++) motes[i]=newMote(true); }
-function newMote(seed){ const b=(Math.random()*K)|0; return { x:Math.random()*W, y:lerp(yBot,yTop,b/(K-1))+(Math.random()-0.5)*20, band:b, life:seed?Math.random():1, sz:0.6+Math.random()*1.4 }; }
+/* ---------- shaders ---------- */
+const VERT = `attribute vec2 a_p; void main(){ gl_Position=vec4(a_p,0.0,1.0); }`;
+const FRAG = `
+precision highp float;
+uniform vec2  u_res;
+uniform float u_time, u_pan, u_level;
+uniform sampler2D u_spec;            // x = pitch (low->high), r=Left energy, g=Right energy
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453123); }
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.02+vec2(7.3,3.1); a*=0.5; } return v; }
+vec3 pal(float t){ return 0.55 + 0.45*cos(6.2831853*(vec3(1.0,0.92,0.72)*t + vec3(0.02,0.20,0.46))); }
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res.xy;
+  float pitch = uv.y;
+  vec2 lr = texture2D(u_spec, vec2(clamp(pitch,0.002,0.998), 0.5)).rg;
+  float eL=lr.x, eR=lr.y;
+  float side = smoothstep(0.0,1.0,uv.x);
+  float dirE = mix(eL, eR, side);                 // left of screen = L channel, right = R
+  float e = mix((eL+eR)*0.5, dirE, 0.65);
+  // flowing, domain-warped noise advected toward the sounding side
+  float t = u_time*0.05;
+  vec2 fl = vec2(u_pan*0.85 + 0.10, 0.05);
+  vec2 p  = uv*vec2(3.2,2.4);
+  float w1 = fbm(p + t*fl);
+  float w2 = fbm(p + 1.6*w1 + t*fl*1.4 + 5.2);
+  float n  = fbm(p + 2.0*vec2(w1,w2) + t*fl);
+  float fil = smoothstep(0.25,0.95,n);            // silky filaments
+  float inten = e*(0.35 + 1.3*fil) + e*e*0.6;
+  vec3 col = pal(pitch)*inten;
+  col += pal(pitch)*e*0.5*pow(fil,3.0);           // soft glow
+  col += mix(vec3(0.012,0.014,0.032), vec3(0.03,0.024,0.06), uv.y);  // background wash
+  col *= 1.0 + u_level*0.4;
+  vec2 q=uv-0.5; col *= 1.0 - 0.55*dot(q,q);      // vignette
+  col = (col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);   // ACES tonemap
+  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
+}`;
+function compile(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.error('shader:', gl.getShaderInfoLog(s)); return null; } return s; }
 
-buildBands(); resize(); initMotes();
+let prog, loc={}, specTex;
+function initGL(){
+  const vs=compile(gl.VERTEX_SHADER,VERT), fs=compile(gl.FRAGMENT_SHADER,FRAG);
+  if(!vs||!fs) return false;
+  prog=gl.createProgram(); gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error('link:', gl.getProgramInfoLog(prog)); return false; }
+  gl.useProgram(prog);
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const a=gl.getAttribLocation(prog,'a_p'); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+  ['u_res','u_time','u_pan','u_level','u_spec'].forEach(n=> loc[n]=gl.getUniformLocation(prog,n));
+  specTex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,specTex);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,SPEC_W,1,0,gl.RGBA,gl.UNSIGNED_BYTE,specData);
+  gl.uniform1i(loc.u_spec,0);
+  return true;
+}
 
-/* ---------------- audio ---------------- */
+/* ---------- audio → spectrum texture (log-spaced, stereo) ---------- */
+const SPEC_W=128;
+const specData = new Uint8Array(SPEC_W*4);
+const sL=new Float32Array(SPEC_W), sR=new Float32Array(SPEC_W);
 let actx, anL, anR, freqL, freqR, binHz, playing=false, ready=false;
+let panS=0, levelS=0;
 function buildGraph(){
   if(actx) return;
-  actx = new (window.AudioContext||window.webkitAudioContext)();
-  const src = actx.createMediaElementSource(audio);
-  const sp  = actx.createChannelSplitter(2);
-  anL = actx.createAnalyser(); anR = actx.createAnalyser();
-  anL.fftSize = 4096; anR.fftSize = 4096;
-  anL.smoothingTimeConstant = 0.82; anR.smoothingTimeConstant = 0.82;
-  freqL = new Uint8Array(anL.frequencyBinCount);
-  freqR = new Uint8Array(anR.frequencyBinCount);
-  binHz = actx.sampleRate / anL.fftSize;
-  src.connect(sp); sp.connect(anL,0); sp.connect(anR,1);
-  src.connect(actx.destination);
-  assignBins(); ready=true;
+  actx=new (window.AudioContext||window.webkitAudioContext)();
+  const src=actx.createMediaElementSource(audio), sp=actx.createChannelSplitter(2);
+  anL=actx.createAnalyser(); anR=actx.createAnalyser();
+  anL.fftSize=2048; anR.fftSize=2048; anL.smoothingTimeConstant=0.8; anR.smoothingTimeConstant=0.8;
+  freqL=new Uint8Array(anL.frequencyBinCount); freqR=new Uint8Array(anR.frequencyBinCount);
+  binHz=actx.sampleRate/anL.fftSize;
+  src.connect(sp); sp.connect(anL,0); sp.connect(anR,1); src.connect(actx.destination);
+  ready=true;
 }
-function bandAvg(arr,b){ let s=0,n=0,hi=Math.min(b.i1,arr.length-1); for(let i=b.i0;i<=hi;i++){s+=arr[i];n++;} return n?s/n/255:0; }
-
-let master=0, mPan=0, mPanS=0;
-function analyse(t,dt){
+const F_LO=40, F_HI=14000;
+function specBand(arr,i){ const f0=F_LO*Math.pow(F_HI/F_LO,i/SPEC_W), f1=F_LO*Math.pow(F_HI/F_LO,(i+1)/SPEC_W);
+  let a=Math.max(1,Math.round(f0/binHz)), b=Math.max(a,Math.round(f1/binHz)), m=0; b=Math.min(b,arr.length-1);
+  for(let k=a;k<=b;k++) if(arr[k]>m) m=arr[k]; return m/255; }
+function updateSpectrum(t,dt){
+  let sumL=0,sumR=0;
   if(ready && playing){
     anL.getByteFrequencyData(freqL); anR.getByteFrequencyData(freqR);
-    let tot=0, wpan=0;
-    for(let i=0;i<K;i++){ const b=bands[i]; const tilt=1+ (i/K)*1.3;
-      const eL=bandAvg(freqL,b)*tilt, eR=bandAvg(freqR,b)*tilt;
-      b.eL += (eL-b.eL)*0.3; b.eR += (eR-b.eR)*0.3;
-      const e=Math.pow((b.eL+b.eR)*0.5,0.8); b.e += (e-b.e)*0.25;
-      b.pan += ((b.eR-b.eL)/(b.eR+b.eL+1e-4) - b.pan)*0.14;
-      tot+=b.e; wpan+=b.e*b.pan;
-      b.phase += dt*(0.5+b.e*2.2)*(b.pan>=0?1:-1);              // flow toward its direction
+    for(let i=0;i<SPEC_W;i++){ const tilt=1+ (i/SPEC_W)*1.2;
+      const vL=Math.pow(specBand(freqL,i)*tilt,0.85), vR=Math.pow(specBand(freqR,i)*tilt,0.85);
+      sL[i]+=(vL-sL[i])*0.35; sR[i]+=(vR-sR[i])*0.35; sumL+=sL[i]; sumR+=sR[i];
     }
-    master += (clamp(tot/K*2.0,0,1)-master)*0.1;
-    mPan = tot>1e-3? clamp(wpan/tot,-1,1):0;
   } else {
-    for(let i=0;i<K;i++){ const b=bands[i]; const u=i/(K-1);
-      const e=0.05+0.06*(0.5+0.5*Math.sin(t*0.0005+u*6));
-      b.e += (e-b.e)*0.05;
-      b.pan += (0.6*Math.sin(t*0.0003+u*3)-b.pan)*0.03;
-      b.phase += dt*(0.4+b.e*1.5)*(b.pan>=0?1:-1);
+    for(let i=0;i<SPEC_W;i++){ const u=i/SPEC_W;
+      const v=0.05+0.10*Math.max(0.0,Math.sin(t*0.0006 + u*9.0))*Math.exp(-u*1.2);
+      const vl=v*(0.6+0.4*Math.sin(t*0.0004)), vr=v*(0.6+0.4*Math.cos(t*0.0004));
+      sL[i]+=(vl-sL[i])*0.05; sR[i]+=(vr-sR[i])*0.05; sumL+=sL[i]; sumR+=sR[i];
     }
-    master += (0.16-master)*0.04; mPan=0.4*Math.sin(t*0.00022);
   }
-  mPanS += (mPan-mPanS)*0.06;
+  for(let i=0;i<SPEC_W;i++){ specData[i*4]=clamp(sL[i],0,1)*255; specData[i*4+1]=clamp(sR[i],0,1)*255; specData[i*4+2]=0; specData[i*4+3]=255; }
+  const level=clamp((sumL+sumR)/(SPEC_W*2)*2.4,0,1);
+  const pan=(sumR-sumL)/(sumR+sumL+1e-3);
+  levelS+=(level-levelS)*0.1; panS+=(clamp(pan,-1,1)-panS)*0.06;
 }
 
-/* ---------------- draw ---------------- */
-function drawBg(){
-  const bg=g.createLinearGradient(0,0,0,H);
-  bg.addColorStop(0,'#0a0816'); bg.addColorStop(0.55,'#080711'); bg.addColorStop(1,'#05060c');
-  g.fillStyle=bg; g.fillRect(0,0,W,H);
-  // faint breath of colour from the centre of energy
-  const gx=CX+mPanS*W*0.32;
-  const ga=g.createRadialGradient(gx,H*0.5,0,gx,H*0.5,MIN*0.9);
-  ga.addColorStop(0, rgba([60,52,110], 0.10+master*0.10)); ga.addColorStop(1,'rgba(60,52,110,0)');
-  g.fillStyle=ga; g.fillRect(0,0,W,H);
-}
-const STEP=()=>Math.max(6, W/150);
-function drawWaves(){
-  g.globalCompositeOperation='lighter'; g.lineJoin='round'; g.lineCap='round';
-  const step=STEP();
-  for(let i=0;i<K;i++){ const b=bands[i];
-    const yb=lerp(yBot,yTop,i/(K-1));
-    const xdir=CX + b.pan*W*0.42;                          // where this pitch sits, by direction
-    const envW=lerp(W*0.55, W*0.16, Math.abs(b.pan));      // tighter when hard-panned
-    const amp=3 + b.e*(H*0.05);
-    const a=clamp(0.12+b.e*0.7,0,0.85);
-    const kx=0.010 + i*0.0006;
-    // brightness fades away from the sound's direction
-    const lg=g.createLinearGradient(xdir-envW,0,xdir+envW,0);
-    lg.addColorStop(0, rgba(b.col,0)); lg.addColorStop(0.5, rgba(b.col,a)); lg.addColorStop(1, rgba(b.col,0));
-    const path=()=>{ g.beginPath();
-      for(let x=-20;x<=W+20;x+=step){ const env=Math.exp(-((x-xdir)/envW)*((x-xdir)/envW));
-        const y=yb - (Math.sin(x*kx+b.phase)*0.7 + Math.sin(x*kx*0.5 - b.phase*0.6)*0.3)*amp*env;
-        x===-20? g.moveTo(x,y) : g.lineTo(x,y); } };
-    // soft glow pass + bright core
-    g.strokeStyle=lg; g.lineWidth=5+b.e*12; g.globalAlpha=0.5; path(); g.stroke();
-    g.globalAlpha=1; g.lineWidth=1.4+b.e*2.4; path(); g.stroke();
-  }
-  g.globalCompositeOperation='source-over';
-}
-function drawMotes(dt){
-  if(!motes.length) return;
-  g.globalCompositeOperation='lighter';
-  for(const m of motes){ const b=bands[m.band]||bands[0];
-    m.life-=dt*0.25; if(m.life<=0){ Object.assign(m,newMote(false)); continue; }
-    m.x += (40 + b.e*120)*dt*(b.pan>=0?1:-1);             // drift in the flow's direction
-    if(m.x<-20||m.x>W+20){ Object.assign(m,newMote(false)); continue; }
-    const yb=lerp(yBot,yTop,m.band/(K-1));
-    const y=yb - Math.sin(m.x*0.01+b.phase)*b.e*H*0.04;
-    const al=clamp(m.life,0,1)*(0.10+b.e*0.4), r=m.sz*(1.6+b.e*3);
-    g.globalAlpha=al; g.drawImage(moteSpr, m.x-r, y-r, r*2, r*2);
-  }
-  g.globalAlpha=1; g.globalCompositeOperation='source-over';
-}
-function drawBloom(){
-  // downscale the lit scene, then add it back blurred-by-upscale → soft dreamy glow
-  bctx.setTransform(1,0,0,1,0,0); bctx.clearRect(0,0,bw,bh);
-  bctx.imageSmoothingEnabled=true; bctx.drawImage(cv, 0,0, bw,bh);
-  g.globalCompositeOperation='lighter'; g.imageSmoothingEnabled=true;
-  g.globalAlpha=0.55; g.drawImage(bloom, 0,0, W,H);
-  g.globalAlpha=0.30; g.drawImage(bloom, 0,0, W,H);
-  g.globalAlpha=1; g.globalCompositeOperation='source-over';
-}
-function drawHints(){
-  g.globalCompositeOperation='source-over';
-  g.font="11px 'Cinzel', serif"; g.textBaseline='middle';
-  g.fillStyle='rgba(180,170,210,0.28)';
-  g.textAlign='left';  g.fillText('LEFT',  18, H*0.5);
-  g.textAlign='right'; g.fillText('RIGHT', W-18, H*0.5);
-  g.save(); g.translate(15,H*0.5); g.rotate(-Math.PI/2);
-  g.textAlign='center'; g.fillStyle='rgba(180,170,210,0.22)'; g.fillText('LOW   ·   PITCH   ·   HIGH',0,-W+33);
-  g.restore();
-}
-
-/* ---------------- main loop ---------------- */
-let _fa=0,_fn=0,_lt=0,_pt=0;
+/* ---------- render loop ---------- */
+let _fa=0,_fn=0,_lt=0,_pt=0,_t0=0;
 function frame(t){
   requestAnimationFrame(frame);
-  if(document.hidden) return;
-  const dt = _pt ? Math.min((t-_pt)/1000, 0.05) : 0.016; _pt=t;
+  if(document.hidden || !gl || !prog) return;
+  if(!_t0) _t0=t;
+  const dt=_pt?Math.min((t-_pt)/1000,0.05):0.016; _pt=t;
   if(_lt){ _fa+=t-_lt; _fn++; if(_fa>=1500){ const fps=1000*_fn/_fa; _fa=0; _fn=0;
-    if(autoQ && fps<42 && qTier>0){ qTier--; buildBands(); resize(); initMotes(); } } }
+    if(autoQ && fps<40 && qTier>0){ qTier--; scale=QUAL[qTier]; resize(); } } }
   _lt=t;
 
-  analyse(t,dt);
-  drawBg();
-  drawWaves();
-  drawMotes(dt);
-  drawBloom();
-  drawHints();
+  updateSpectrum(t,dt);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,specTex);
+  gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,SPEC_W,1,gl.RGBA,gl.UNSIGNED_BYTE,specData);
+  gl.uniform2f(loc.u_res, cv.width, cv.height);
+  gl.uniform1f(loc.u_time, (t-_t0));
+  gl.uniform1f(loc.u_pan, panS);
+  gl.uniform1f(loc.u_level, levelS);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
-requestAnimationFrame(frame);
 
-/* ---------------- transport / files ---------------- */
+if(gl){
+  resize();
+  if(initGL()) requestAnimationFrame(frame);
+  else { gl=null; document.body.style.background='radial-gradient(circle at 50% 45%, #1a1230, #07060c 70%)'; }
+}else{
+  document.body.style.background='radial-gradient(circle at 50% 45%, #1a1230, #07060c 70%)';
+  console.warn('WebGL unavailable — visualizer disabled.');
+}
+
+/* ---------- transport / files (unchanged) ---------- */
 const fileI=document.getElementById('file'), begin=document.getElementById('begin'),
       newb=document.getElementById('newb'), play=document.getElementById('play'),
       seek=document.getElementById('seek'), tm=document.getElementById('tm'),
@@ -238,13 +201,12 @@ addEventListener('dragleave',e=>{ if(e.relatedTarget===null) drop.classList.remo
 addEventListener('drop',e=>{ e.preventDefault(); drop.classList.remove('on');
   const f=e.dataTransfer.files[0]; if(f&&f.type.startsWith('audio')) load(f); });
 
-// keyboard: space = play/pause · F = fullscreen · H = hide interface · Q = cycle quality
 addEventListener('keydown',e=>{
   const tag=(e.target&&e.target.tagName)||''; if(tag==='INPUT'||tag==='TEXTAREA') return;
   const k=e.key.toLowerCase();
   if(k===' '){ e.preventDefault(); play.click(); }
   else if(k==='f'){ if(!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   else if(k==='h'){ hud.classList.toggle('show'); }
-  else if(k==='q'){ autoQ=false; qTier=(qTier+1)%3; buildBands(); resize(); initMotes(); }
+  else if(k==='q'){ autoQ=false; qTier=(qTier+1)%3; scale=QUAL[qTier]; resize(); }
 });
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ _lt=0; _pt=0; } });
