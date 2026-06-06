@@ -1,8 +1,8 @@
 {
-  "name": "symphonia",
+  "name": "opus",
   "private": true,
   "version": "1.0.0",
-  "description": "Symphonia — turns any orchestral recording into a symphony of light. A browser-based classical music visualizer.",
+  "description": "Opus — turns any orchestral recording into a symphony of light. A browser-based classical music visualizer.",
   "type": "module",
   "scripts": {
     "dev": "vite",

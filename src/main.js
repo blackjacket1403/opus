@@ -1,7 +1,7 @@
 import './style.css';
 "use strict";
 /* =========================================================================
-   SYMPHONIA — a mesmerising visualisation of classical music
+   OPUS — a mesmerising visualisation of classical music
    curl-flow light field + living morphing core, driven by Web Audio
    ========================================================================= */
 const cv = document.getElementById('c');

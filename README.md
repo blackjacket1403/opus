@@ -1,4 +1,4 @@
-# Symphonia — A Symphony of Light
+# Opus — A Symphony of Light
 
 A browser-based **orchestral / classical music visualizer**. Offer a recording and its
 voices become rivers of light: a curl-flow field of glowing particles around a living,
@@ -28,7 +28,7 @@ npm run preview  # serve the production build locally
 
 ## Deploy to GitHub Pages
 
-**Live site:** https://blackjacket1403.github.io/symphonia/
+**Live site:** https://blackjacket1403.github.io/opus/
 
 This repo deploys via the **`gh-pages` branch** (Pages → Source: *Deploy from a branch* →
 `gh-pages` / root). To re-deploy after changes:
@@ -57,7 +57,7 @@ git subtree push --prefix dist origin gh-pages   # or push dist/ to gh-pages by 
 
 ## Performance
 
-Symphonia auto-tunes to your machine: an FPS governor scales the pixel ratio and particle count
+Opus auto-tunes to your machine: an FPS governor scales the pixel ratio and particle count
 across quality tiers, particle bloom is drawn from pre-baked glow sprites (no per-particle
 canvas shadow), rendering pauses on a hidden tab, and `prefers-reduced-motion` starts at a
 calmer tier. Press **Q** to override the automatic quality.

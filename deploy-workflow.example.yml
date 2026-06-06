@@ -9,7 +9,7 @@
 # requires a token/login with the `workflow` scope (re-run `gh auth login` and grant it, or use
 # a PAT with `workflow`). Then set Settings → Pages → Source: GitHub Actions.
 
-name: Deploy Symphonia to GitHub Pages
+name: Deploy Opus to GitHub Pages
 
 on:
   push:
