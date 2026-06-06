@@ -1,0 +1,50 @@
+# OPTIONAL: GitHub Actions auto-deploy.
+#
+# This repo is currently deployed the simple way: the built `dist/` is pushed to the
+# `gh-pages` branch and GitHub Pages serves that branch (Settings → Pages → Branch: gh-pages).
+# Re-deploy after changes with:  npm run build  &&  see README "Deploy" section.
+#
+# If you'd rather have Pages rebuild automatically on every push to main, move this file to
+# `.github/workflows/deploy.yml` and push it. NOTE: pushing anything under `.github/workflows/`
+# requires a token/login with the `workflow` scope (re-run `gh auth login` and grant it, or use
+# a PAT with `workflow`). Then set Settings → Pages → Source: GitHub Actions.
+
+name: Deploy Symphonia to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci || npm install
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
