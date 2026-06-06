@@ -1,12 +1,15 @@
 import './style.css';
 "use strict";
 /* =========================================================================
-   OPUS — The Ring of Sound
-   A luminous ring at the centre of a dark hall. Pitch wraps around it (low at
-   the top, high at the bottom); the LEFT half of the ring is the left channel
-   and the RIGHT half is the right channel, so the ring swells toward the side
-   the sound comes from. It breathes, rotates slowly, and glows with real bloom.
-   Structured and clear — not noise.
+   OPUS — Resonant Forms
+   You sit inside the emotional space of a performance. The orchestra is not
+   musicians but a living spatial composition of translucent, silk-like resonant
+   membranes — one per section — layered in a dark, elegant listening space.
+   Pitch is read by vertical placement & motion (basses low/grounded → high airs
+   light & high); stereo direction is read by each form LEANING and GLOWING
+   toward the side the sound comes from. Faint audience silhouettes ring the
+   space; soft architectural arcs arch overhead. Midnight, champagne gold,
+   bronze, ivory. Calm, graceful, cinematic.
    Canvas 2D · Web Audio.
    ========================================================================= */
 const cv = document.getElementById('c');
@@ -17,128 +20,159 @@ const lerp=(a,b,t)=>a+(b-a)*t;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const rgba=(c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
 
-let W,H,DPR,CX,CY,MIN,R0,AMP, bloom,bctx,bw,bh;
+let W,H,DPR,CX,CY,MIN, bloom,bctx,bw,bh;
 const QUAL=[{dpr:1.0},{dpr:1.35},{dpr:1.6}];
 let qTier=(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)?1:2, autoQ=true;
 function resize(){
   DPR=Math.min(window.devicePixelRatio||1, QUAL[qTier].dpr);
   W=window.innerWidth; H=window.innerHeight;
   cv.width=Math.floor(W*DPR); cv.height=Math.floor(H*DPR); g.setTransform(DPR,0,0,DPR,0,0);
-  CX=W/2; CY=H*0.5; MIN=Math.min(W,H); R0=MIN*0.17; AMP=MIN*0.23;
+  CX=W/2; CY=H*0.5; MIN=Math.min(W,H);
   bw=Math.max(1,Math.floor(W*DPR/4)); bh=Math.max(1,Math.floor(H*DPR/4));
   if(!bloom){ bloom=document.createElement('canvas'); bctx=bloom.getContext('2d'); }
   bloom.width=bw; bloom.height=bh;
-  g.fillStyle='#06060d'; g.fillRect(0,0,W,H);
+  buildAudience();
+  g.fillStyle='#070810'; g.fillRect(0,0,W,H);
 }
 addEventListener('resize', resize);
 
-/* ---------------- pitch bands per channel (log-spaced) ---------------- */
-const P=56, F_LO=42, F_HI=12000;
-const eL=new Float32Array(P), eR=new Float32Array(P);
-let actx, anL, anR, freqL, freqR, binHz, playing=false, ready=false, bins=[];
+/* ---------------- orchestral sections (warm, cohesive palette) ---------------- */
+const SECTIONS=[
+  { name:'Double basses', lo:24,   hi:95,    rgb:[150, 98, 60], speed:0.16, wl:0.0042 },
+  { name:'Cellos',        lo:95,   hi:260,   rgb:[184,128, 76], speed:0.22, wl:0.0056 },
+  { name:'Violas',        lo:260,  hi:620,   rgb:[206,162,104], speed:0.30, wl:0.0072 },
+  { name:'Violins',       lo:620,  hi:1600,  rgb:[226,196,148], speed:0.40, wl:0.0092 },
+  { name:'Woodwinds',     lo:1600, hi:4200,  rgb:[224,212,178], speed:0.52, wl:0.0118 },
+  { name:'High airs',     lo:4200, hi:13000, rgb:[232,224,204], speed:0.66, wl:0.0150 },
+];
+const N=SECTIONS.length;
+SECTIONS.forEach(s=>{ s.eL=0; s.eR=0; s.e=0; s.pan=0; s.panS=0; s.phase=Math.random()*TAU; s.phase2=Math.random()*TAU; });
+
+/* ---------------- faint audience ringing the space ---------------- */
+let audience=[];
+function buildAudience(){
+  audience=[];
+  for(let row=0; row<2; row++){
+    const rx=W*(0.54+row*0.07), ry=H*(0.44+row*0.05), cyy=H*0.50;
+    for(let a=0.12*Math.PI; a<=0.88*Math.PI; a+=0.045){          // lower arc → bottom + sides
+      const x=CX+Math.cos(a)*rx, y=cyy+Math.sin(a)*ry;
+      if(y<H*0.6) continue;
+      audience.push({x,y, s:lerp(16,11,row)});
+    }
+  }
+}
+
+resize();
+
+/* ---------------- audio ---------------- */
+let actx, anL, anR, freqL, freqR, binHz, playing=false, ready=false;
 function buildGraph(){
   if(actx) return;
   actx=new (window.AudioContext||window.webkitAudioContext)();
   const src=actx.createMediaElementSource(audio), sp=actx.createChannelSplitter(2);
   anL=actx.createAnalyser(); anR=actx.createAnalyser();
-  anL.fftSize=4096; anR.fftSize=4096; anL.smoothingTimeConstant=0.8; anR.smoothingTimeConstant=0.8;
+  anL.fftSize=4096; anR.fftSize=4096; anL.smoothingTimeConstant=0.84; anR.smoothingTimeConstant=0.84;
   freqL=new Uint8Array(anL.frequencyBinCount); freqR=new Uint8Array(anR.frequencyBinCount);
   binHz=actx.sampleRate/anL.fftSize;
-  for(let i=0;i<P;i++){ const f0=F_LO*Math.pow(F_HI/F_LO,i/P), f1=F_LO*Math.pow(F_HI/F_LO,(i+1)/P);
-    bins.push([Math.max(1,Math.round(f0/binHz)), Math.max(1,Math.round(f1/binHz))]); }
+  SECTIONS.forEach(s=>{ s.i0=Math.max(1,Math.round(s.lo/binHz)); s.i1=Math.max(s.i0,Math.round(s.hi/binHz)); });
   src.connect(sp); sp.connect(anL,0); sp.connect(anR,1); src.connect(actx.destination);
   ready=true;
 }
-function bandMax(arr,i){ const b=bins[i]; let m=0, hi=Math.min(b[1],arr.length-1); for(let k=b[0];k<=hi;k++) if(arr[k]>m)m=arr[k]; return m/255; }
+function bandAvg(arr,s){ let sum=0,n=0,hi=Math.min(s.i1,arr.length-1); for(let i=s.i0;i<=hi;i++){sum+=arr[i];n++;} return n?sum/n/255:0; }
 
-let level=0, rot=0;
+let master=0, mPanS=0, breath=0;
 function analyse(t,dt){
-  let sum=0;
+  let tot=0, wpan=0;
   if(ready&&playing){
     anL.getByteFrequencyData(freqL); anR.getByteFrequencyData(freqR);
-    for(let i=0;i<P;i++){ const tilt=1+(i/P)*1.4;
-      const vL=Math.pow(bandMax(freqL,i)*tilt,0.82), vR=Math.pow(bandMax(freqR,i)*tilt,0.82);
-      eL[i]+=(vL-eL[i])*0.3; eR[i]+=(vR-eR[i])*0.3; sum+=eL[i]+eR[i]; }
+    for(let i=0;i<N;i++){ const s=SECTIONS[i]; const tilt=1+i*0.16;
+      const eL=bandAvg(freqL,s)*tilt, eR=bandAvg(freqR,s)*tilt;
+      s.eL+=(eL-s.eL)*0.22; s.eR+=(eR-s.eR)*0.22;
+      const e=Math.pow((s.eL+s.eR)*0.5,0.82); s.e+=(e-s.e)*0.14;
+      s.pan+=((s.eR-s.eL)/(s.eR+s.eL+1e-4)-s.pan)*0.10; s.panS+=(s.pan-s.panS)*0.06;
+      tot+=s.e; wpan+=s.e*s.panS;
+    }
   } else {
-    for(let i=0;i<P;i++){ const u=i/P;
-      const v=0.06+0.10*Math.max(0,Math.sin(t*0.0006+u*7))*Math.exp(-u*0.9);
-      eL[i]+=(v*(0.7+0.3*Math.sin(t*0.0005))-eL[i])*0.05;
-      eR[i]+=(v*(0.7+0.3*Math.cos(t*0.0005))-eR[i])*0.05; sum+=eL[i]+eR[i]; }
+    for(let i=0;i<N;i++){ const s=SECTIONS[i];
+      const e=0.10+0.07*Math.sin(t*0.00035+i*1.0); s.e+=(e-s.e)*0.04;
+      s.panS+=(0.4*Math.sin(t*0.00022+i*0.8)-s.panS)*0.03; tot+=s.e; wpan+=s.e*s.panS;
+    }
   }
-  level+=(clamp(sum/P,0,1)-level)*0.1;
-  rot+=dt*0.04;
+  master+=(clamp(tot/N*1.6,0,1)-master)*0.08;
+  mPanS+=((tot>1e-3?wpan/tot:0)-mPanS)*0.05;
+  breath=0.6+0.4*Math.sin(t*0.0005);                     // slow shared breathing
+  for(const s of SECTIONS){ s.phase+=dt*s.speed*(1+s.e*0.6); s.phase2+=dt*s.speed*0.6; }
 }
 
-/* sample energy for a point: side<0 = left channel, side>0 = right; pitch 0..1 */
-function energyAt(side, pitch){ const f=clamp(pitch,0,1)*(P-1), i=Math.floor(f), fr=f-i;
-  const arr= side<0?eL:eR; return lerp(arr[i], arr[Math.min(P-1,i+1)], fr); }
-
-/* ---------------- draw ---------------- */
-function ringPoints(){
-  // closed loop: down the right side (low→high, R channel), up the left side (high→low, L channel)
-  const pts=[];
-  for(let i=0;i<P;i++){ const pitch=i/(P-1); const ang=-Math.PI/2 + pitch*Math.PI + rot;   // top→bottom, right
-    const r=R0 + energyAt(1,pitch)*AMP; pts.push([CX+Math.cos(ang)*r, CY+Math.sin(ang)*r]); }
-  for(let i=0;i<P;i++){ const pitch=(P-1-i)/(P-1); const ang=Math.PI/2 + i/(P-1)*Math.PI + rot; // bottom→top, left
-    const r=R0 + energyAt(-1,pitch)*AMP; pts.push([CX+Math.cos(ang)*r, CY+Math.sin(ang)*r]); }
-  return pts;
-}
-function tracePath(pts){ const n=pts.length; g.beginPath();
-  g.moveTo((pts[n-1][0]+pts[0][0])/2,(pts[n-1][1]+pts[0][1])/2);
-  for(let i=0;i<n;i++){ const a=pts[i], b=pts[(i+1)%n]; g.quadraticCurveTo(a[0],a[1],(a[0]+b[0])/2,(a[1]+b[1])/2); }
-  g.closePath();
-}
-function draw(){
-  // background
-  const bg=g.createRadialGradient(CX,CY,0,CX,CY,MIN*0.9);
-  bg.addColorStop(0,'#0c0a18'); bg.addColorStop(0.6,'#08070f'); bg.addColorStop(1,'#050509');
+/* ---------------- the listening space ---------------- */
+function drawSpace(){
+  // midnight backdrop with a faint warm pooling low-centre
+  const bg=g.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#080a14'); bg.addColorStop(0.55,'#070810'); bg.addColorStop(1,'#050509');
   g.fillStyle=bg; g.fillRect(0,0,W,H);
-  // faint guide rings
-  g.strokeStyle='rgba(150,140,190,0.06)'; g.lineWidth=1;
-  for(let k=1;k<=3;k++){ g.beginPath(); g.arc(CX,CY,R0+AMP*k/3,0,TAU); g.stroke(); }
-
-  const pts=ringPoints();
-  // colour: warm gold (low, top) → cool (high, bottom)
-  const grad=g.createLinearGradient(0,CY-R0-AMP,0,CY+R0+AMP);
-  grad.addColorStop(0, rgba([255,206,140], 0.95));
-  grad.addColorStop(0.5, rgba([255,176,110], 0.95));
-  grad.addColorStop(1, rgba([150,196,255], 0.95));
-
-  // soft filled body
+  const warm=g.createRadialGradient(CX+mPanS*W*0.1,H*0.62,0,CX+mPanS*W*0.1,H*0.62,MIN*0.85);
+  warm.addColorStop(0, rgba([120,86,46], 0.10+master*0.08)); warm.addColorStop(1,'rgba(120,86,46,0)');
+  g.fillStyle=warm; g.fillRect(0,0,W,H);
+  // soft architectural arcs overhead (suggest a shell, not a hall)
   g.globalCompositeOperation='lighter';
-  const fill=g.createRadialGradient(CX,CY,R0*0.5,CX,CY,R0+AMP);
-  fill.addColorStop(0, rgba([255,190,120], 0.04+level*0.10));
-  fill.addColorStop(0.7, rgba([255,170,110], 0.05+level*0.10));
-  fill.addColorStop(1, 'rgba(120,150,255,0)');
-  tracePath(pts); g.fillStyle=fill; g.fill();
-
-  // glowing stroke
-  g.lineJoin='round';
-  g.strokeStyle=grad; g.lineWidth=2.2+level*5; g.globalAlpha=0.95; tracePath(pts); g.stroke();
-  g.lineWidth=1.0; g.globalAlpha=0.7; g.strokeStyle='rgba(255,248,235,0.7)'; tracePath(pts); g.stroke();
-  g.globalAlpha=1;
-
-  // inner core ring + gentle reactive heart (small, tasteful)
-  const core=g.createRadialGradient(CX,CY,0,CX,CY,R0*0.95);
-  core.addColorStop(0, rgba([255,236,200], 0.10+level*0.22));
-  core.addColorStop(1, 'rgba(255,210,150,0)');
-  g.fillStyle=core; g.beginPath(); g.arc(CX,CY,R0*0.95,0,TAU); g.fill();
+  for(let k=0;k<3;k++){ const ry=H*(0.30+k*0.10), rx=W*(0.42+k*0.10);
+    g.strokeStyle=rgba([214,184,130], 0.05+master*0.03); g.lineWidth=1;
+    g.beginPath(); g.ellipse(CX+mPanS*W*0.04, H*0.36, rx, ry, 0, Math.PI*1.04, Math.PI*1.96); g.stroke(); }
   g.globalCompositeOperation='source-over';
 }
+function drawAudience(){
+  for(const a of audience){
+    g.fillStyle='rgba(4,5,9,0.9)';
+    g.beginPath(); g.ellipse(a.x,a.y,a.s,a.s*1.2,0,0,TAU); g.fill();
+    g.beginPath(); g.arc(a.x,a.y-a.s*1.0,a.s*0.6,0,TAU); g.fill();
+    g.strokeStyle='rgba(214,184,130,0.05)'; g.lineWidth=1;       // barely-there warm rim
+    g.beginPath(); g.arc(a.x,a.y-a.s*1.0,a.s*0.6,Math.PI*1.15,Math.PI*1.95); g.stroke();
+  }
+}
+
+/* ---------------- a resonant silk membrane per section ---------------- */
+function drawMembrane(s,i){
+  const reg=i/(N-1);
+  const baseY=lerp(H*0.80, H*0.20, reg);
+  const cx=CX + s.panS*W*0.17 + mPanS*W*0.03;          // lean toward the sound's side
+  const envW=W*(0.30+0.12*(1-reg));                    // broader for low, tighter for high
+  const thick=(H*0.030 + s.e*H*0.085)*(0.8+breath*0.3);
+  const amp=(H*0.012 + s.e*H*0.05)*(1.15-reg*0.35);
+  const a=clamp(0.06 + s.e*0.30, 0, 0.42);
+  const col=s.rgb;
+  const step=Math.max(7, W/120);
+  const yTopAt=x=>{ const env=Math.exp(-((x-cx)/envW)*((x-cx)/envW)); const th=thick*(0.35+0.65*env);
+    return baseY - th*0.5 + Math.sin(x*s.wl+s.phase)*amp*env; };
+  const yBotAt=x=>{ const env=Math.exp(-((x-cx)/envW)*((x-cx)/envW)); const th=thick*(0.35+0.65*env);
+    return baseY + th*0.5 + Math.sin(x*s.wl+s.phase2+1.1)*amp*env; };
+  // translucent silk body (source-over so layers blend like cloth, never blow out)
+  g.beginPath();
+  for(let x=-20;x<=W+20;x+=step){ const y=yTopAt(x); x===-20?g.moveTo(x,y):g.lineTo(x,y); }
+  for(let x=W+20;x>=-20;x-=step){ g.lineTo(x, yBotAt(x)); }
+  g.closePath();
+  const vg=g.createLinearGradient(0,baseY-thick,0,baseY+thick);
+  vg.addColorStop(0, rgba(col,0)); vg.addColorStop(0.5, rgba(col,a)); vg.addColorStop(1, rgba(col,0));
+  g.fillStyle=vg; g.fill();
+  // luminous sheen — a travelling highlight that catches the "silk" surface
+  g.globalCompositeOperation='lighter';
+  const hl=(0.5+0.5*Math.sin(s.phase*0.8))*W;                       // highlight travels along x
+  g.lineWidth=1.4+s.e*2.0; g.lineCap='round';
+  g.beginPath();
+  for(let x=-20;x<=W+20;x+=step){ const y=(yTopAt(x)*0.62+yBotAt(x)*0.38);
+    x===-20?g.moveTo(x,y):g.lineTo(x,y); }
+  const sg=g.createLinearGradient(hl-W*0.28,0,hl+W*0.28,0);
+  const sh=clamp(0.10+s.e*0.5,0,0.7);
+  sg.addColorStop(0, rgba([255,244,220],0)); sg.addColorStop(0.5, rgba([255,246,224],sh)); sg.addColorStop(1, rgba([255,244,220],0));
+  g.strokeStyle=sg; g.stroke();
+  g.globalCompositeOperation='source-over';
+}
+
 function drawBloom(){
   bctx.setTransform(1,0,0,1,0,0); bctx.clearRect(0,0,bw,bh); bctx.imageSmoothingEnabled=true;
   bctx.drawImage(cv,0,0,bw,bh);
   g.globalCompositeOperation='lighter'; g.imageSmoothingEnabled=true;
-  g.globalAlpha=0.6; g.drawImage(bloom,0,0,W,H);
-  g.globalAlpha=0.35; g.drawImage(bloom,0,0,W,H);
+  g.globalAlpha=0.32; g.drawImage(bloom,0,0,W,H);            // restrained, soft glow
   g.globalAlpha=1; g.globalCompositeOperation='source-over';
-}
-function drawHints(){
-  g.font="11px 'Cinzel', serif"; g.textBaseline='middle'; g.fillStyle='rgba(180,172,205,0.30)';
-  g.textAlign='right'; g.fillText('LEFT', CX-R0-AMP-14, CY);
-  g.textAlign='left';  g.fillText('RIGHT', CX+R0+AMP+14, CY);
-  g.textAlign='center'; g.fillStyle='rgba(180,172,205,0.22)';
-  g.fillText('low', CX, CY-R0-AMP-16); g.fillText('high', CX, CY+R0+AMP+16);
 }
 
 let _fa=0,_fn=0,_lt=0,_pt=0;
@@ -149,9 +183,13 @@ function frame(t){
   if(_lt){ _fa+=t-_lt; _fn++; if(_fa>=1500){ const fps=1000*_fn/_fa; _fa=0; _fn=0;
     if(autoQ&&fps<42&&qTier>0){ qTier--; resize(); } } }
   _lt=t;
-  analyse(t,dt); draw(); drawBloom(); drawHints();
+  analyse(t,dt);
+  drawSpace();
+  for(let i=N-1;i>=0;i--) drawMembrane(SECTIONS[i],i);    // high/far first → basses grounded in front
+  drawBloom();
+  drawAudience();                                          // silhouettes in front, framing the space
 }
-requestAnimationFrame(frame); resize();
+requestAnimationFrame(frame);
 
 /* ---------------- transport / files ---------------- */
 const fileI=document.getElementById('file'), begin=document.getElementById('begin'),
