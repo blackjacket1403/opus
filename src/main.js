@@ -1,13 +1,11 @@
 import './style.css';
 "use strict";
 /* =========================================================================
-   OPUS — A Performance
-   You are in the audience of a darkened hall. On a glowing stage a full
-   orchestra plays Vivaldi: ~60 musicians seated in their real sections. The
-   section that is sounding RIGHT NOW lights up — and the left/right of the
-   stage answers to the stereo image, so you can feel where the sound comes
-   from. Soft light of the music rises from the players and washes through the
-   hall. The aim is simply: see what you are hearing.
+   OPUS — Aurora of the Spectrum
+   Pitch becomes flowing waves: a stack of luminous bands from low (bottom) to
+   high (top). Each band swells and brightens with that pitch's energy, and —
+   the key idea — it glows and flows toward the side the sound is actually
+   coming from (its stereo direction). Calm, flowing, beautiful.
    Vanilla JS · Canvas 2D · Web Audio.
    ========================================================================= */
 const cv = document.getElementById('c');
@@ -18,82 +16,32 @@ const lerp  = (a,b,t)=>a+(b-a)*t;
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
 const rgba  = (c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
 
-let W,H,DPR,CX,MIN, stageFront, stageBack;
+let W,H,DPR,CX,MIN,yTop,yBot;
+let bloom,bctx,bw,bh;   // offscreen for a cheap, pretty bloom pass
 const QUAL=[
-  {dpr:1.00, wisps:55},   // low
-  {dpr:1.35, wisps:95},   // medium
-  {dpr:1.60, wisps:150},  // high
+  {dpr:1.00, bands:20, motes:0},    // low
+  {dpr:1.35, bands:28, motes:40},   // medium
+  {dpr:1.60, bands:38, motes:70},   // high
 ];
 let qTier = (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 1 : 2;
 let autoQ = true;
 
-/* ---------------- the sounding sections (frequency bands → families) -------- */
-const SECTIONS = [
-  { name:'Double Basses',      lo:24,   hi:95,    rgb:[214,120, 72] },
-  { name:'Cellos',             lo:95,   hi:260,   rgb:[228,150, 84] },
-  { name:'Violas',             lo:260,  hi:620,   rgb:[232,182,104] },
-  { name:'Violins',            lo:620,  hi:1600,  rgb:[238,214,150] },
-  { name:'Woodwinds',          lo:1600, hi:4200,  rgb:[160,214,186] },
-  { name:'Flutes & high airs', lo:4200, hi:13000, rgb:[180,206,240] },
-];
-const N = SECTIONS.length;
-SECTIONS.forEach(s=>{ s.eL=0; s.eR=0; s.e=0; s.pan=0; });
-function glow(rgb){
-  const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getContext('2d');
-  const gr=x.createRadialGradient(32,32,0,32,32,32);
-  gr.addColorStop(0,'rgba(255,248,235,0.95)');
-  gr.addColorStop(0.32,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.6)`);
-  gr.addColorStop(1,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
-  x.fillStyle=gr; x.fillRect(0,0,64,64); return c;
-}
-SECTIONS.forEach(s=> s.spr=glow(s.rgb));
+/* pitch → colour (low warm → high cool) */
+const PAL=[ [255,104, 76],[255,150, 80],[246,212,130],[150,224,176],[120,198,255],[176,150,255] ];
+function pitchColor(t){ t=clamp(t,0,1)*(PAL.length-1); const i=Math.floor(t), f=t-i, a=PAL[i], b=PAL[Math.min(PAL.length-1,i+1)];
+  return [lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f)]; }
 
-/* ---------------- the orchestra: ~60 seated players in real sections -------- */
-/* each row: depth d (0 front → 1 back), how many players, which band lights it,
-   horizontal spread, and an instrument hint. Strings fan in front, winds & brass
-   behind, timpani at the back — the classic seating. */
-const ROWS = [
-  { d:0.06, n:14, band:3, spread:0.98, kind:'bow'  },  // 1st + 2nd violins (front arc)
-  { d:0.20, n:12, band:3, spread:0.95, kind:'bow'  },
-  { d:0.34, n:10, band:2, spread:0.90, kind:'bow'  },  // violas
-  { d:0.47, n:8,  band:1, spread:0.82, kind:'cello'},  // cellos
-  { d:0.60, n:6,  band:0, spread:0.74, kind:'bass' },  // double basses
-  { d:0.55, n:7,  band:4, spread:0.46, kind:'wind' },  // woodwinds (centre, behind strings)
-  { d:0.70, n:6,  band:2, spread:0.52, kind:'brass'},  // brass
-  { d:0.78, n:3,  band:5, spread:0.26, kind:'wind' },  // flutes / piccolo
-  { d:0.82, n:2,  band:0, spread:0.16, kind:'timp' },  // timpani (back centre)
-];
-let players=[], bandPlayers=[];
-function buildOrchestra(){
-  players=[]; bandPlayers=Array.from({length:N},()=>[]);
-  for(const r of ROWS){
-    const y    = lerp(stageFront, stageBack, r.d);
-    const sc   = lerp(1.0, 0.5, r.d);                 // perspective shrink
-    const arcW = lerp(W*0.36, W*0.12, r.d);
-    for(let k=0;k<r.n;k++){
-      const u = r.n>1 ? (k/(r.n-1))*2-1 : 0;          // -1 (stage L) … +1 (stage R)
-      const x = CX + u*arcW*r.spread;
-      const yy= y + Math.abs(u)*sc*10;                // edges a touch nearer → gentle arc
-      const p={ x, y:yy, sc, band:r.band, kind:r.kind, side:u<0?-1:1, ph:Math.random()*TAU, lit:0 };
-      players.push(p); bandPlayers[r.band].push(p);
-    }
-  }
-  players.sort((a,b)=>a.y-b.y);                       // draw back → front
+/* ---------------- pitch bands (log-spaced) ---------------- */
+const F_LO=42, F_HI=12000;
+let bands=[], K=0;
+function buildBands(){
+  K=QUAL[qTier].bands; bands=new Array(K);
+  for(let i=0;i<K;i++) bands[i]={ e:0,eL:0,eR:0,pan:0, phase:Math.random()*TAU, col:pitchColor(i/(K-1)), i0:0,i1:0 };
+  if(ready) assignBins();
 }
-
-/* ---------------- the hall: audience silhouettes + chandeliers ------------- */
-let audience=[], chand=[];
-function buildHall(){
-  audience=[];
-  // a few rows of audience heads in the foreground, framing the view
-  for(let row=0; row<3; row++){
-    const y=lerp(H*0.985,H*0.86,row/2), sz=lerp(20,12,row/2), step=sz*1.7;
-    for(let x=-step; x<W+step; x+=step){
-      audience.push({ x:x+(row%2)*step*0.5+(Math.random()-0.5)*4, y:y+(Math.random()-0.5)*4, r:sz*(0.85+Math.random()*0.3) });
-    }
-  }
-  chand=[];
-  for(let i=0;i<5;i++) chand.push({ x:W*(0.12+0.19*i)+ (Math.random()-0.5)*20, y:H*(0.08+Math.random()*0.05), tw:Math.random()*TAU });
+function assignBins(){
+  for(let i=0;i<K;i++){ const f0=F_LO*Math.pow(F_HI/F_LO, i/K), f1=F_LO*Math.pow(F_HI/F_LO, (i+1)/K);
+    bands[i].i0=Math.max(1,Math.round(f0/binHz)); bands[i].i1=Math.max(bands[i].i0,Math.round(f1/binHz)); }
 }
 
 function resize(){
@@ -101,20 +49,25 @@ function resize(){
   W = window.innerWidth; H = window.innerHeight;
   cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
   g.setTransform(DPR,0,0,DPR,0,0);
-  CX=W/2; MIN=Math.min(W,H);
-  stageFront = H*0.74; stageBack = H*0.40;
-  buildOrchestra(); buildHall();
-  g.fillStyle='#06050a'; g.fillRect(0,0,W,H);
+  CX=W/2; MIN=Math.min(W,H); yTop=H*0.16; yBot=H*0.86;
+  bw=Math.max(1,Math.floor(W*DPR/4)); bh=Math.max(1,Math.floor(H*DPR/4));
+  if(!bloom){ bloom=document.createElement('canvas'); bctx=bloom.getContext('2d'); }
+  bloom.width=bw; bloom.height=bh;
+  g.fillStyle='#06070e'; g.fillRect(0,0,W,H);
 }
 addEventListener('resize', resize);
 
-/* ---------------- music-flow wisps (soft light rising from the players) ----- */
-let wisps=[];
-function initWisps(){ const cap=QUAL[qTier].wisps; wisps=new Array(cap); for(let i=0;i<cap;i++) wisps[i]={alive:false}; }
+/* ---------------- drifting motes (carried in the flow) ---------------- */
+const moteSpr=(function(){ const c=document.createElement('canvas'); c.width=c.height=32; const x=c.getContext('2d');
+  const gr=x.createRadialGradient(16,16,0,16,16,16); gr.addColorStop(0,'rgba(255,248,232,0.9)'); gr.addColorStop(1,'rgba(255,248,232,0)');
+  x.fillStyle=gr; x.fillRect(0,0,32,32); return c; })();
+let motes=[];
+function initMotes(){ const n=QUAL[qTier].motes; motes=new Array(n); for(let i=0;i<n;i++) motes[i]=newMote(true); }
+function newMote(seed){ const b=(Math.random()*K)|0; return { x:Math.random()*W, y:lerp(yBot,yTop,b/(K-1))+(Math.random()-0.5)*20, band:b, life:seed?Math.random():1, sz:0.6+Math.random()*1.4 }; }
 
-resize(); initWisps();
+buildBands(); resize(); initMotes();
 
-/* ---------------- audio: stereo, per-section ---------------- */
+/* ---------------- audio ---------------- */
 let actx, anL, anR, freqL, freqR, binHz, playing=false, ready=false;
 function buildGraph(){
   if(actx) return;
@@ -122,169 +75,111 @@ function buildGraph(){
   const src = actx.createMediaElementSource(audio);
   const sp  = actx.createChannelSplitter(2);
   anL = actx.createAnalyser(); anR = actx.createAnalyser();
-  anL.fftSize = 2048; anR.fftSize = 2048;
-  anL.smoothingTimeConstant = 0.84; anR.smoothingTimeConstant = 0.84;
+  anL.fftSize = 4096; anR.fftSize = 4096;
+  anL.smoothingTimeConstant = 0.82; anR.smoothingTimeConstant = 0.82;
   freqL = new Uint8Array(anL.frequencyBinCount);
   freqR = new Uint8Array(anR.frequencyBinCount);
   binHz = actx.sampleRate / anL.fftSize;
   src.connect(sp); sp.connect(anL,0); sp.connect(anR,1);
   src.connect(actx.destination);
-  SECTIONS.forEach(s=>{ s.i0=Math.max(1,Math.round(s.lo/binHz)); s.i1=Math.max(s.i0,Math.round(s.hi/binHz)); });
-  ready=true;
+  assignBins(); ready=true;
 }
-function bandAvg(arr,s){ let sum=0,n=0, hi=Math.min(s.i1,arr.length-1); for(let i=s.i0;i<=hi;i++){sum+=arr[i];n++;} return n?sum/n/255:0; }
+function bandAvg(arr,b){ let s=0,n=0,hi=Math.min(b.i1,arr.length-1); for(let i=b.i0;i<=hi;i++){s+=arr[i];n++;} return n?s/n/255:0; }
 
-let master=0, mPan=0, mPanS=0, pulse=0, flux=0, dom=3, domScore=0;
-function analyse(t){
+let master=0, mPan=0, mPanS=0;
+function analyse(t,dt){
   if(ready && playing){
     anL.getByteFrequencyData(freqL); anR.getByteFrequencyData(freqR);
-    let tot=0, wpan=0, hi=0, best=-1, bi=dom;
-    for(let i=0;i<N;i++){ const s=SECTIONS[i]; const tilt=1+i*0.16;
-      const eL=bandAvg(freqL,s)*tilt, eR=bandAvg(freqR,s)*tilt;
-      s.eL += (eL-s.eL)*0.25; s.eR += (eR-s.eR)*0.25;
-      const e=Math.pow((s.eL+s.eR)*0.5, 0.85);
-      s.e += (e-s.e)*0.2;
-      s.pan += ((s.eR-s.eL)/(s.eR+s.eL+1e-4) - s.pan)*0.12;
-      tot+=s.e; wpan+=s.e*s.pan; if(i>=4) hi+=s.e;
-      if(s.e>best){ best=s.e; bi=i; }
+    let tot=0, wpan=0;
+    for(let i=0;i<K;i++){ const b=bands[i]; const tilt=1+ (i/K)*1.3;
+      const eL=bandAvg(freqL,b)*tilt, eR=bandAvg(freqR,b)*tilt;
+      b.eL += (eL-b.eL)*0.3; b.eR += (eR-b.eR)*0.3;
+      const e=Math.pow((b.eL+b.eR)*0.5,0.8); b.e += (e-b.e)*0.25;
+      b.pan += ((b.eR-b.eL)/(b.eR+b.eL+1e-4) - b.pan)*0.14;
+      tot+=b.e; wpan+=b.e*b.pan;
+      b.phase += dt*(0.5+b.e*2.2)*(b.pan>=0?1:-1);              // flow toward its direction
     }
-    master += (clamp(tot/N*1.7,0,1)-master)*0.1;
-    mPan = tot>1e-3 ? clamp(wpan/tot,-1,1) : 0;
-    const d=hi-flux; flux=hi; if(d>0.05) pulse=Math.min(1,pulse+d*2.4); pulse*=0.9;
-    if(bi===dom) domScore=Math.min(1,domScore+0.04); else { domScore-=0.05; if(domScore<=0){ dom=bi; domScore=0.3; } }
+    master += (clamp(tot/K*2.0,0,1)-master)*0.1;
+    mPan = tot>1e-3? clamp(wpan/tot,-1,1):0;
   } else {
-    for(let i=0;i<N;i++){ const s=SECTIONS[i];
-      const e=0.07+0.06*Math.sin(t*0.0004+i*1.1);
-      s.e += (e-s.e)*0.06; s.eL=s.e; s.eR=s.e;
-      s.pan += (0.4*Math.sin(t*0.00025+i*0.9)-s.pan)*0.04;
+    for(let i=0;i<K;i++){ const b=bands[i]; const u=i/(K-1);
+      const e=0.05+0.06*(0.5+0.5*Math.sin(t*0.0005+u*6));
+      b.e += (e-b.e)*0.05;
+      b.pan += (0.6*Math.sin(t*0.0003+u*3)-b.pan)*0.03;
+      b.phase += dt*(0.4+b.e*1.5)*(b.pan>=0?1:-1);
     }
-    master += (0.14-master)*0.04; mPan=0.35*Math.sin(t*0.00022); pulse*=0.92;
+    master += (0.16-master)*0.04; mPan=0.4*Math.sin(t*0.00022);
   }
   mPanS += (mPan-mPanS)*0.06;
-  // light up each player from its section + the matching stereo side
-  for(const p of players){ const s=SECTIONS[p.band];
-    const chan = p.side<0 ? s.eL : s.eR;
-    const target = clamp(0.10 + chan*1.5 + s.e*0.25, 0, 1);
-    p.lit += (target - p.lit)*0.2;
-  }
 }
 
-/* ---------------- spawn / draw the rising music-light ---------------- */
-function spawnWisp(){
-  let p=null; for(const q of wisps){ if(!q.alive){ p=q; break; } } if(!p) return;
-  // emit from a random player of an active section (weighted by energy)
-  let tot=0; for(let i=0;i<N;i++) tot+=0.02+SECTIONS[i].e; let r=Math.random()*tot, bi=0;
-  for(let i=0;i<N;i++){ r-=0.02+SECTIONS[i].e; if(r<=0){ bi=i; break; } }
-  const arr=bandPlayers[bi]; const src=arr[(Math.random()*arr.length)|0]; if(!src) return;
-  p.alive=true; p.band=bi; p.x=src.x+(Math.random()-0.5)*20; p.y=src.y;
-  p.vx=(Math.random()-0.5)*16 + mPanS*30; p.vy=-(22+Math.random()*34);   // rise, lean with stereo
-  p.life=1; p.size=18+Math.random()*30;
+/* ---------------- draw ---------------- */
+function drawBg(){
+  const bg=g.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#0a0816'); bg.addColorStop(0.55,'#080711'); bg.addColorStop(1,'#05060c');
+  g.fillStyle=bg; g.fillRect(0,0,W,H);
+  // faint breath of colour from the centre of energy
+  const gx=CX+mPanS*W*0.32;
+  const ga=g.createRadialGradient(gx,H*0.5,0,gx,H*0.5,MIN*0.9);
+  ga.addColorStop(0, rgba([60,52,110], 0.10+master*0.10)); ga.addColorStop(1,'rgba(60,52,110,0)');
+  g.fillStyle=ga; g.fillRect(0,0,W,H);
 }
-function drawWisps(dt){
-  // emission rate from overall energy
-  spawnWisp._acc=(spawnWisp._acc||0)+dt*(8+master*70);
-  while(spawnWisp._acc>=1){ spawnWisp._acc-=1; spawnWisp(); }
+const STEP=()=>Math.max(6, W/150);
+function drawWaves(){
+  g.globalCompositeOperation='lighter'; g.lineJoin='round'; g.lineCap='round';
+  const step=STEP();
+  for(let i=0;i<K;i++){ const b=bands[i];
+    const yb=lerp(yBot,yTop,i/(K-1));
+    const xdir=CX + b.pan*W*0.42;                          // where this pitch sits, by direction
+    const envW=lerp(W*0.55, W*0.16, Math.abs(b.pan));      // tighter when hard-panned
+    const amp=3 + b.e*(H*0.05);
+    const a=clamp(0.12+b.e*0.7,0,0.85);
+    const kx=0.010 + i*0.0006;
+    // brightness fades away from the sound's direction
+    const lg=g.createLinearGradient(xdir-envW,0,xdir+envW,0);
+    lg.addColorStop(0, rgba(b.col,0)); lg.addColorStop(0.5, rgba(b.col,a)); lg.addColorStop(1, rgba(b.col,0));
+    const path=()=>{ g.beginPath();
+      for(let x=-20;x<=W+20;x+=step){ const env=Math.exp(-((x-xdir)/envW)*((x-xdir)/envW));
+        const y=yb - (Math.sin(x*kx+b.phase)*0.7 + Math.sin(x*kx*0.5 - b.phase*0.6)*0.3)*amp*env;
+        x===-20? g.moveTo(x,y) : g.lineTo(x,y); } };
+    // soft glow pass + bright core
+    g.strokeStyle=lg; g.lineWidth=5+b.e*12; g.globalAlpha=0.5; path(); g.stroke();
+    g.globalAlpha=1; g.lineWidth=1.4+b.e*2.4; path(); g.stroke();
+  }
+  g.globalCompositeOperation='source-over';
+}
+function drawMotes(dt){
+  if(!motes.length) return;
   g.globalCompositeOperation='lighter';
-  for(const p of wisps){ if(!p.alive) continue;
-    p.life-=dt*0.34; if(p.life<=0){ p.alive=false; continue; }
-    p.vx+=Math.sin((p.y+p.x)*0.01)*6*dt; p.vy*=0.992;
-    p.x+=p.vx*dt; p.y+=p.vy*dt;
-    const a=clamp(p.life,0,1), s=SECTIONS[p.band];
-    const r=p.size*(0.6+(1-a)*0.9);                    // grow softly as it rises & fades
-    g.globalAlpha=a*a*0.16;
-    g.drawImage(s.spr, p.x-r, p.y-r, r*2, r*2);
+  for(const m of motes){ const b=bands[m.band]||bands[0];
+    m.life-=dt*0.25; if(m.life<=0){ Object.assign(m,newMote(false)); continue; }
+    m.x += (40 + b.e*120)*dt*(b.pan>=0?1:-1);             // drift in the flow's direction
+    if(m.x<-20||m.x>W+20){ Object.assign(m,newMote(false)); continue; }
+    const yb=lerp(yBot,yTop,m.band/(K-1));
+    const y=yb - Math.sin(m.x*0.01+b.phase)*b.e*H*0.04;
+    const al=clamp(m.life,0,1)*(0.10+b.e*0.4), r=m.sz*(1.6+b.e*3);
+    g.globalAlpha=al; g.drawImage(moteSpr, m.x-r, y-r, r*2, r*2);
   }
   g.globalAlpha=1; g.globalCompositeOperation='source-over';
 }
-
-/* ---------------- the hall ---------------- */
-function drawHall(t){
-  // deep hall gradient + warm proscenium glow behind the stage
-  const bg=g.createLinearGradient(0,0,0,H);
-  bg.addColorStop(0,'#0a0710'); bg.addColorStop(0.5,'#0b0810'); bg.addColorStop(1,'#070509');
-  g.fillStyle=bg; g.fillRect(0,0,W,H);
-  // proscenium / stage backlight
-  const pg=g.createRadialGradient(CX,stageBack,0,CX,stageBack,MIN*0.95);
-  pg.addColorStop(0, rgba([90,64,40], 0.30+master*0.18));
-  pg.addColorStop(0.5, rgba([50,34,24], 0.16));
-  pg.addColorStop(1, 'rgba(20,14,16,0)');
-  g.fillStyle=pg; g.fillRect(0,0,W,H);
-  // chandeliers high in the hall
-  g.globalCompositeOperation='lighter';
-  for(const c of chand){ c.tw+=0.02; const a=0.18+0.08*Math.sin(c.tw);
-    const cg=g.createRadialGradient(c.x,c.y,0,c.x,c.y,42);
-    cg.addColorStop(0, rgba([255,224,168],a)); cg.addColorStop(1,'rgba(255,224,168,0)');
-    g.fillStyle=cg; g.beginPath(); g.arc(c.x,c.y,42,0,TAU); g.fill();
-    g.fillStyle=rgba([255,236,196],a*1.6); g.beginPath(); g.arc(c.x,c.y,1.5,0,TAU); g.fill();
-  }
+function drawBloom(){
+  // downscale the lit scene, then add it back blurred-by-upscale → soft dreamy glow
+  bctx.setTransform(1,0,0,1,0,0); bctx.clearRect(0,0,bw,bh);
+  bctx.imageSmoothingEnabled=true; bctx.drawImage(cv, 0,0, bw,bh);
+  g.globalCompositeOperation='lighter'; g.imageSmoothingEnabled=true;
+  g.globalAlpha=0.55; g.drawImage(bloom, 0,0, W,H);
+  g.globalAlpha=0.30; g.drawImage(bloom, 0,0, W,H);
+  g.globalAlpha=1; g.globalCompositeOperation='source-over';
+}
+function drawHints(){
   g.globalCompositeOperation='source-over';
-}
-function drawStage(){
-  // a raised, warmly-lit stage platform (trapezoid in perspective)
-  const fy=stageFront+H*0.06, by=stageBack-H*0.02, fw=W*0.46, bw=W*0.18;
-  g.beginPath();
-  g.moveTo(CX-fw,fy); g.lineTo(CX+fw,fy); g.lineTo(CX+bw,by); g.lineTo(CX-bw,by); g.closePath();
-  const sg=g.createLinearGradient(0,by,0,fy);
-  sg.addColorStop(0, rgba([60,44,30], 0.55)); sg.addColorStop(1, rgba([26,18,16], 0.85));
-  g.fillStyle=sg; g.fill();
-  // warm footlight glow across the front of the stage
-  g.globalCompositeOperation='lighter';
-  const fl=g.createLinearGradient(0,fy-40,0,fy+10);
-  fl.addColorStop(0,'rgba(255,200,120,0)'); fl.addColorStop(1, rgba([255,196,120],0.10+master*0.10));
-  g.fillStyle=fl; g.fillRect(CX-fw,fy-40,fw*2,50);
-  g.globalCompositeOperation='source-over';
-}
-function drawPlayers(t){
-  for(const p of players){ const s=SECTIONS[p.band], b=p.lit;
-    const bow = Math.sin(t*0.005*(1+s.e*3)+p.ph)*(0.6+b*2.4);   // gentle playing motion
-    const x=p.x, y=p.y+bow*0.5, sc=p.sc;
-    // glow when sounding
-    if(b>0.14){ g.globalCompositeOperation='lighter'; const gr=sc*(10+b*30);
-      g.globalAlpha=clamp(b*0.7,0,0.8); g.drawImage(s.spr, x-gr, y-gr, gr*2, gr*2);
-      g.globalAlpha=1; g.globalCompositeOperation='source-over'; }
-    // the musician — a small seated silhouette tinted by their section
-    const bodyA = 0.45+b*0.5;
-    g.fillStyle=rgba(s.rgb, bodyA);
-    g.beginPath(); g.ellipse(x, y, sc*3.0, sc*4.2, 0, 0, TAU); g.fill();           // torso
-    g.beginPath(); g.arc(x, y-sc*4.6, sc*1.7, 0, TAU); g.fill();                   // head
-    // instrument hint (a pale stroke) for bowed strings & basses
-    if(p.kind==='bow'||p.kind==='cello'||p.kind==='bass'){
-      g.strokeStyle=rgba([255,244,220], 0.25+b*0.5); g.lineWidth=Math.max(0.8,sc*0.9);
-      const len=sc*(p.kind==='bass'?9:5.5), ang=-0.5 - bow*0.06;
-      g.beginPath(); g.moveTo(x-sc*1.5, y-sc*1.5);
-      g.lineTo(x-sc*1.5+Math.cos(ang)*len, y-sc*1.5+Math.sin(ang)*len); g.stroke();
-    }
-  }
-}
-function drawConductor(){
-  const x=CX, y=stageFront+H*0.085, sc=1.25;
-  // baton sway with the beat
-  const sway=Math.sin(performance.now()*0.004)*(6+pulse*16);
-  g.fillStyle='rgba(8,6,10,0.96)';
-  g.beginPath(); g.ellipse(x,y,sc*7,sc*12,0,0,TAU); g.fill();          // body (back to us)
-  g.beginPath(); g.arc(x,y-sc*13,sc*4.4,0,TAU); g.fill();              // head
-  g.strokeStyle='rgba(20,14,16,0.96)'; g.lineWidth=sc*2.4; g.lineCap='round';
-  g.beginPath(); g.moveTo(x-sc*4,y-sc*4); g.lineTo(x-sc*10-sway*0.3, y-sc*12-Math.abs(sway)*0.2); g.stroke();
-  g.beginPath(); g.moveTo(x+sc*4,y-sc*4); g.lineTo(x+sc*10+sway, y-sc*12-Math.abs(sway)*0.3); g.stroke();
-}
-function drawAudience(){
-  for(const a of audience){
-    g.fillStyle='rgba(6,5,9,0.98)';
-    g.beginPath(); g.ellipse(a.x,a.y,a.r,a.r*1.25,0,0,TAU); g.fill();        // shoulders
-    g.beginPath(); g.arc(a.x,a.y-a.r*1.1,a.r*0.62,0,TAU); g.fill();          // head
-    // faint warm rim from the stage
-    g.strokeStyle='rgba(255,200,140,0.06)'; g.lineWidth=1.2;
-    g.beginPath(); g.arc(a.x,a.y-a.r*1.1,a.r*0.62,Math.PI*1.15,Math.PI*1.95); g.stroke();
-  }
-}
-function drawNowSounding(){
-  const s=SECTIONS[dom];
-  g.textAlign='center'; g.textBaseline='alphabetic';
-  g.font="11px 'Cinzel', serif";
-  g.fillStyle='rgba(217,178,74,0.45)'; g.fillText('NOW SOUNDING', CX, H*0.90);
-  g.font="italic 22px 'Cormorant Garamond', Georgia, serif";
-  g.fillStyle=rgba(s.rgb, 0.55+SECTIONS[dom].e*0.4);
-  g.fillText(s.name, CX, H*0.925);
+  g.font="11px 'Cinzel', serif"; g.textBaseline='middle';
+  g.fillStyle='rgba(180,170,210,0.28)';
+  g.textAlign='left';  g.fillText('LEFT',  18, H*0.5);
+  g.textAlign='right'; g.fillText('RIGHT', W-18, H*0.5);
+  g.save(); g.translate(15,H*0.5); g.rotate(-Math.PI/2);
+  g.textAlign='center'; g.fillStyle='rgba(180,170,210,0.22)'; g.fillText('LOW   ·   PITCH   ·   HIGH',0,-W+33);
+  g.restore();
 }
 
 /* ---------------- main loop ---------------- */
@@ -294,17 +189,15 @@ function frame(t){
   if(document.hidden) return;
   const dt = _pt ? Math.min((t-_pt)/1000, 0.05) : 0.016; _pt=t;
   if(_lt){ _fa+=t-_lt; _fn++; if(_fa>=1500){ const fps=1000*_fn/_fa; _fa=0; _fn=0;
-    if(autoQ && fps<42 && qTier>0){ qTier--; resize(); initWisps(); } } }
+    if(autoQ && fps<42 && qTier>0){ qTier--; buildBands(); resize(); initMotes(); } } }
   _lt=t;
 
-  analyse(t);
-  drawHall(t);
-  drawStage();
-  drawWisps(dt);     // soft music-light rising behind/among the players
-  drawPlayers(t);
-  drawConductor();
-  drawAudience();
-  drawNowSounding();
+  analyse(t,dt);
+  drawBg();
+  drawWaves();
+  drawMotes(dt);
+  drawBloom();
+  drawHints();
 }
 requestAnimationFrame(frame);
 
@@ -352,6 +245,6 @@ addEventListener('keydown',e=>{
   if(k===' '){ e.preventDefault(); play.click(); }
   else if(k==='f'){ if(!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.(); }
   else if(k==='h'){ hud.classList.toggle('show'); }
-  else if(k==='q'){ autoQ=false; qTier=(qTier+1)%3; resize(); initWisps(); }
+  else if(k==='q'){ autoQ=false; qTier=(qTier+1)%3; buildBands(); resize(); initMotes(); }
 });
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ _lt=0; _pt=0; } });
